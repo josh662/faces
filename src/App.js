@@ -2,19 +2,25 @@ import * as faceapi from 'face-api.js';
 import React, { useEffect, useState, useRef } from 'react';
 import './App.css';
 
-function App() {
+export default function App() {
 
   const [camAccess, setcamAccess] = useState(localStorage.getItem("camAccess") ? localStorage.getItem("camAccess") : false)
 
   const [modelsLoaded, setModelsLoaded] = useState(false);
   const [captureVideo, setCaptureVideo] = useState(false);
 
+  const [msgTip, setMsgTip] = useState("Se posicione na frente da webcam!")
+
   const videoRef = useRef();
-  const videoHeight = 480;
-  const videoWidth = 640;
+  const videoHeight = 288 //480
+  const videoWidth = 384 //640;
   const canvasRef = useRef();
 
-  var media = []
+  const PHOTO_NUMBER = 20 // Número de foto a serem tirada para confirmar a identidade
+  const MIN_PROB_FACE = 80 // Probabilidade mínima de identificação para considerar como rosto
+  var imgs = 1
+  var xhr = new XMLHttpRequest();
+  var form = new FormData();
 
   function redirect(path) {
     window.open(path, "_self")
@@ -67,7 +73,7 @@ function App() {
   }
 
   const handleVideoOnPlay = () => {
-    setInterval(async () => {
+    let inter = setInterval(async () => {
       if (canvasRef && canvasRef.current) {
         canvasRef.current.innerHTML = faceapi.createCanvasFromMedia(videoRef.current);
         const displaySize = {
@@ -78,28 +84,104 @@ function App() {
         faceapi.matchDimensions(canvasRef.current, displaySize);
 
         const detections = await faceapi.detectAllFaces(videoRef.current, new faceapi.TinyFaceDetectorOptions()).withFaceLandmarks().withFaceExpressions();
-
+        
         const resizedDetections = faceapi.resizeResults(detections, displaySize);
-        //console.log(resizedDetections)
-        media.push(parseInt(resizedDetections[0]["detection"]["score"]*100))
-        let cont = 0
-        let sum = 0
-        for (let c = 0; c < media.length; c++) {
-          cont = c
-          sum += media[c]
-        }
-        let res = sum/cont
-        //let txt = ` Probabilidade de ser um rosto: ${parseInt(resizedDetections[0]["detection"]["score"]*100)}\nNúmero de rostos detectados: ${resizedDetections.length}`
-        let txt = ` Probabilidade de ser um rosto: ${res}\nNúmero de rostos detectados: ${resizedDetections.length}`
-        console.log(txt)
+        if (resizedDetections.length > 0) {
+          let prob = parseInt(resizedDetections[0]["detection"]["score"]*100).toFixed(2)
+          var res = prob
+          let txt = ` Probabilidade de ser um rosto: ${res}\nNúmero de rostos detectados: ${resizedDetections.length}`
+          setMsgTip(txt)
+  
+          //canvasRef && canvasRef.current && canvasRef.current.getContext('2d').clearRect(0, 0, videoWidth, videoHeight);
+          //canvasRef && canvasRef.current && faceapi.draw.drawDetections(canvasRef.current, resizedDetections);
+          //canvasRef && canvasRef.current && faceapi.draw.drawFaceLandmarks(canvasRef.current, resizedDetections);
+          //canvasRef && canvasRef.current && faceapi.draw.drawFaceExpressions(canvasRef.current, resizedDetections);
+          if(resizedDetections.length == 1) {
+            if (prob >= MIN_PROB_FACE) {
+              var context = canvasRef.current.getContext('2d');
+              context.drawImage(videoRef.current, 0, 0, canvasRef.current.width, canvasRef.current.height);
 
-        canvasRef && canvasRef.current && canvasRef.current.getContext('2d').clearRect(0, 0, videoWidth, videoHeight);
-        canvasRef && canvasRef.current && faceapi.draw.drawDetections(canvasRef.current, resizedDetections);
-        canvasRef && canvasRef.current && faceapi.draw.drawFaceLandmarks(canvasRef.current, resizedDetections);
-        canvasRef && canvasRef.current && faceapi.draw.drawFaceExpressions(canvasRef.current, resizedDetections);
+              let canvas = document.querySelector("canvas")
+  
+              if (imgs >= PHOTO_NUMBER+1) {
+                //form.append("qtd_images", PHOTO_NUMBER);
+                for(var pair of form.entries()) {
+                  console.log(pair[0]+ ', '+ pair[1]);
+                }
+                xhr.open('POST', 'http://127.0.0.1:8000/getface', false);
+                xhr.onreadystatechange = () => {
+                  var identification = JSON.parse(xhr.responseText)
+                  console.log(identification)
+                  clearInterval(inter)
+                  if(identification["faces"] != "") {
+                    identify("", identification["faces"])
+                  } else {
+                    setMsgTip("Nenhum rosto encontrado...")
+                  }
+                  closeWebcam()
+                }
+  
+                xhr.send(form);
+              } else {
+                var imgBse64 = canvasRef.current.toDataURL("image/jpeg");
+                let image = document.createElement("img")
+                image.setAttribute("src", imgBse64)
+                var wrapper = document.querySelector('.fotos')
+                wrapper.appendChild(image)
+
+                canvas.toBlob(function (blob) {
+                  form.append(`img${imgs}`, blob, `img${imgs}.jpg`);
+                  imgs += 1
+                }, 'image/jpeg');
+              }
+            }
+          } else {
+            setMsgTip("Só pode haver uma pessoa na imagem para detecção")
+          }
+
+        } else {
+          setMsgTip("Não foi detectado ninguém")
+        }
+
       }
     }, 100)
+    console.log("Fim do intervalo!")
   }
+
+  function identify(familiar_faces, faces) {
+    var form = new FormData();
+    form.append("familiar_faces", familiar_faces)
+    form.append("faces", faces)
+
+    var xhr = new XMLHttpRequest();
+    xhr.open('POST', 'http://127.0.0.1:8000/compare', false);
+    xhr.onreadystatechange = () => {
+        let nomes = ['Joshua', 'Rasteli', 'Jarbas', 'Leonardo', 'João Bolito', 'Fabrício', 'Marrenta', 'Guidelli']
+        let obj = JSON.parse(xhr.responseText)
+        let prob = eval(obj["prob"])
+        let res = eval(obj["res"])
+        let id = Number(obj["index"])
+        
+
+        let error = (obj["error"])
+        let error_message = obj["error_message"]
+
+        let text = error_message
+        if (!error) {
+            text = `Você não está cadastrado no banco de dados!`
+            if (res[id] > 0.45) {
+                text = `Pessoa identificada: ${nomes[id]}\nCerteza: ${(res[id]*100).toFixed(2)}%`
+            } else if (res[id] > 0.35) {
+                text = `Resultados Inconclusivos. Por favor melhore a imagem para uma melhor identificação`
+            }
+            //text = `Pessoa identificada: ${nomes[id]}\nCerteza: ${(res[id]*100).toFixed(2)}%`
+        }
+        setMsgTip(text)
+        alert(text)
+        console.log(xhr.responseText)
+    }
+    xhr.send(form);
+}
 
   const closeWebcam = () => {
     videoRef.current.pause();
@@ -141,9 +223,13 @@ function App() {
           modelsLoaded ?
             <div>
               <div style={{ display: 'flex', justifyContent: 'center', padding: '10px' }}>
-                <video ref={videoRef} height={videoHeight} width={videoWidth} onPlay={handleVideoOnPlay} style={{ borderRadius: '10px' }} />
-                <canvas ref={canvasRef} style={{ position: 'absolute' }} />
+                <video ref={videoRef} height={videoHeight} width={videoWidth} onPlay={handleVideoOnPlay} style={{ borderRadius: '20px' }} />
+                <canvas ref={canvasRef} style={{ position: 'absolute', borderRadius: '20px' }} />
               </div>
+                <div style={{ display: 'flex', justifyContent: 'center', padding: '10px' }}>
+                  <p>{msgTip}</p>
+                </div>
+                <div className="fotos"></div>
             </div>
             :
             <div>Carregando...</div>
@@ -154,5 +240,3 @@ function App() {
     </div>
   );
 }
-
-export default App;
